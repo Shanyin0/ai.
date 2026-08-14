@@ -137,6 +137,8 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) {}
         });
 
+        web.addJavascriptInterface(new SaveBridge(this), "MengxiaNative");
+
         if (savedInstanceState != null) web.restoreState(savedInstanceState);
         else web.loadUrl(siteUrl());
     }
