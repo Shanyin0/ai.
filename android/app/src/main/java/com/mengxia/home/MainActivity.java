@@ -17,6 +17,7 @@ import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebResourceError;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -89,6 +90,11 @@ public class MainActivity extends Activity {
                     | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
         }
 
+        // 在 WebView 起来之前先把现场封存一份。
+        // App 一跑起来就会写东西（光存一份新页面就是八兆），那种写入最容易触发
+        // LevelDB 合并，一合并旧聊天记录的字节就真没了。只做一次
+        try { Snapshot.once(this); } catch (Throwable ignored) {}
+
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.parseColor("#F6F0E4"));
         root.setLayoutParams(new ViewGroup.LayoutParams(
@@ -127,9 +133,28 @@ public class MainActivity extends Activity {
                 return false; // 一切都留在 App 里
             }
 
+            // 主页面：手边有什么就先开什么，一秒都不等网。
+            // 手边的东西 = 装 APK 时带进来的那一份，或者之前下载存下的那一份。
+            // 所以梯子开不开、WiFi 还是流量、甚至断网，都进得去。
+            // 新页面交给网页自己去换（它开起来会对版本号）。
+            // 网址始终不变（换成 file:// 的话她的东西会全丢）
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest req) {
+                try {
+                    if (req == null || !req.isForMainFrame()) return null;
+                    if (!"GET".equalsIgnoreCase(req.getMethod())) return null;
+                    String u = req.getUrl() == null ? "" : req.getUrl().toString();
+                    if (!PageCache.isMain(u, siteUrl())) return null;
+                    if (!PageCache.hasAny(MainActivity.this)) return null;   // 手边真的什么都没有，交给 WebView
+                    return new WebResourceResponse("text/html", "utf-8", PageCache.open(MainActivity.this));
+                } catch (Exception e) { return null; }
+            }
+
             @Override
             public void onReceivedError(WebView v, WebResourceRequest req, WebResourceError err) {
                 if (req != null && req.isForMainFrame()) {
+                    // 手边有存货就不算失败 —— 那一份已经把页面撑起来了
+                    if (PageCache.hasAny(MainActivity.this)) return;
                     loadFailed = true;
                     askForUrl(true);
                 }
@@ -221,6 +246,42 @@ public class MainActivity extends Activity {
         });
 
         web.addJavascriptInterface(new SaveBridge(this), "MengxiaNative");
+        web.addJavascriptInterface(new UsageBridge(this), "MengxiaUsage");
+        web.addJavascriptInterface(new XBridge(this), "MengxiaX");
+        // 聊天记录被盖掉之后，去 LevelDB 的旧文件里按字节捞。只读 App 自己的目录
+        web.addJavascriptInterface(new DigBridge(this), "MengxiaDig");
+        // 她自己想强行去拿一份最新的页面时用：把存的那份丢掉，再从网上下一次
+        web.addJavascriptInterface(new Object() {
+            @android.webkit.JavascriptInterface
+            public void fresh() {
+                // 以前这儿是「删掉存的那份 + 整个 WebView 重新加载」。那是错的：
+                // 一重新加载又走拦截，下载的那份刚被删了，于是退到装 APK 时
+                // 一起装进来的 assets/page.html —— 比原来还旧。她点一次退一次。
+                //
+                // 现在只做一件事：后台去拉一份新的存起来。当前这一屏不动
+                // （网页那边自己会把新页面换上去），下次开机手边就是新的了。
+                PageCache.refreshLater(MainActivity.this, siteUrl());
+            }
+
+            /**
+             * 拿别的 App 打开一个网址（推特、浏览器之类）。
+             * 走系统的 ACTION_VIEW，装了推特就直接进推特。
+             * 不这么做的话链接会在梦匣自己的 WebView 里打开，把她挤出去。
+             */
+            @android.webkit.JavascriptInterface
+            public void openUrl(final String u) {
+                if (u == null || u.length() == 0) return;
+                web.post(new Runnable() {
+                    public void run() {
+                        try {
+                            Intent it = new Intent(Intent.ACTION_VIEW, Uri.parse(u));
+                            it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            startActivity(it);
+                        } catch (Exception ignored) {}
+                    }
+                });
+            }
+        }, "MengxiaShell");
 
         // 主动推送：挂上定时闹钟，并要一次通知权限
         Pusher.schedule(getApplicationContext());
@@ -235,6 +296,12 @@ public class MainActivity extends Activity {
 
         if (savedInstanceState != null) web.restoreState(savedInstanceState);
         else web.loadUrl(siteUrl());
+
+        // 页面已经用手边那份开起来了。这会儿再悄悄去把存货换成新的，
+        // 下次开更快。这一趟的新页面不靠它 —— 网页自己会去对版本号。
+        web.postDelayed(new Runnable() {
+            public void run() { PageCache.refreshLater(MainActivity.this, siteUrl()); }
+        }, 3000);
     }
 
     private boolean hasMic() {
