@@ -3,9 +3,10 @@ name: 打包梦匣 APK
 on:
   workflow_dispatch:        # 手动点按钮就能打包
   push:
-    branches: [claude/sensei-du7ur1]
+    branches: [main]
     paths:
       - 'android/**'
+      - 'index.html'
       - '.github/workflows/build-apk.yml'
 
 permissions:
@@ -29,18 +30,39 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      - name: 算版本号
+        # 第三位不过 9：满十就往中间那位进一。
+        # 1.0.9 之后是 1.1，然后 1.1.1 … 1.1.9，再然后 1.2。
+        # OFFSET 是因为 1.0.10 已经发出去过一次，把它那一格让开。
+        run: |
+          N=$(( ${{ github.run_number }} - 1 ))
+          MINOR=$(( N / 10 ))
+          PATCH=$(( N % 10 ))
+          if [ "$PATCH" = "0" ]; then VER="1.$MINOR"; else VER="1.$MINOR.$PATCH"; fi
+          echo "VER=$VER" >> $GITHUB_ENV
+          echo "打出来的是 $VER"
+
+      - name: 把页面塞进 APK
+        # 装在壳里的这一份是「不联网也能开」的底子。
+        # 开起来之后网页自己会去对版本号，有新的就换成新的。
+        run: |
+          mkdir -p android/app/src/main/assets
+          cp index.html android/app/src/main/assets/page.html
+          cp build.txt android/app/src/main/assets/build.txt || true
+          ls -la android/app/src/main/assets
+
       - name: 打包
         working-directory: android
         run: |
           gradle --no-daemon assembleRelease \
             -PappVersionCode=${{ github.run_number }} \
-            -PappVersionName=1.0.${{ github.run_number }}
+            -PappVersionName=$VER
 
       - name: 改个名字
         run: |
           mkdir -p out
           cp android/app/build/outputs/apk/release/app-release.apk \
-             "out/mengxia-1.0.${{ github.run_number }}.apk"
+             "out/mengxia-$VER.apk"
           ls -la out
 
       - name: 存一份（Actions 里可下载）
@@ -53,7 +75,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete apk --yes --cleanup-tag || true
-          gh release create apk out/*.apk \
-            --title "梦匣 App · 1.0.${{ github.run_number }}" \
-            --notes "手机上点下面的 .apk 就能装。装过一次之后，以后更新前端不用重装，重开 App 就是新的。"
+          # 每一版都单独留一个 release，永远不删 —— 以前这儿是
+          # 「gh release delete apk」，等于每打一版就把上一版抹掉，
+          # 她想装回某个旧版本的时候什么都找不到。别再这么干。
+          STAMP=$(cat build.txt 2>/dev/null || echo "")
+          gh release create "v$VER" out/*.apk \
+            --title "梦匣 App · $VER" \
+            --notes "这一版的安装包，永远留着，随时装得回来。内置页面 $STAMP。手机上的聊天、日记、照片都在各自的地方存着，换版本不动它们。" \
+            || echo "v$VER 已经有了，跳过"
+
+          # 另外维持一个固定的 apk 标签，永远指向最新那一版 —— 她习惯从这里下。
+          # 只换里面的文件，不删 release
+          if gh release view apk >/dev/null 2>&1; then
+            gh release upload apk out/*.apk --clobber
+            gh release edit apk --title "梦匣 App · $VER（最新）"
+          else
+            gh release create apk out/*.apk \
+              --title "梦匣 App · $VER（最新）" \
+              --notes "这里永远是最新的一版。想装回旧版本，去 Releases 里翻 v1.x.x。"
+          fi
