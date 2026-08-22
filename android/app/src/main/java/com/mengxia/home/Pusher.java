@@ -91,9 +91,7 @@ public class Pusher {
             File f = new File(ctx.getFilesDir(), "sir_avatar.png");
             if (f.exists()) return square(BitmapFactory.decodeFile(f.getAbsolutePath()));
         } catch (Exception ignored) {}
-        try {
-            return square(BitmapFactory.decodeResource(ctx.getResources(), R.mipmap.ic_launcher));
-        } catch (Exception ignored) {}
+        // 没有他的脸就宁可什么都不放 —— 别拿软件图标顶上
         return null;
     }
 
@@ -188,12 +186,23 @@ public class Pusher {
             JSONObject cfg = new JSONObject(cfgStr);
             if (blocked(ctx, cfg).length() > 0) return;
 
-            String reply = callModel(cfg);
+            String reply = callModel(ctx, cfg);
             if (reply == null) return;
-            reply = clean(reply);
-            if (reply.length() == 0) return;
+            reply = strip(reply);
+            if (reply.trim().length() == 0) return;
 
-            addPending(ctx, reply);
+            // 他想分几条就是几条 —— 一行一条，别糊成一整段
+            String[] lines = reply.split("\n");
+            int sent = 0;
+            for (String raw : lines) {
+                String one = clean(raw);
+                if (one.length() == 0) continue;
+                addPending(ctx, one);
+                if (sent > 0) { try { Thread.sleep(700); } catch (InterruptedException ig) {} }
+                notify(ctx, cfg.optString("sirName", "先生"), one);
+                if (++sent >= 5) break;
+            }
+            if (sent == 0) return;
             SharedPreferences.Editor e = sp.edit();
             e.putLong("lastMsgTs", System.currentTimeMillis());
             e.putInt("cooldown", 120 + new Random().nextInt(91));
@@ -203,8 +212,22 @@ public class Pusher {
             e.putInt("usedToday", used + 1);
             e.apply();
 
-            notify(ctx, cfg.optString("sirName", "先生"), reply);
         } catch (Exception ignored) {}
+    }
+
+    /** 只把标签和代码块去掉，换行留着 —— 换行就是"他分了几条" */
+    private static String strip(String t) {
+        if (t == null) return "";
+        return t.replaceAll("(?s)<think>.*?</think>", "")
+                .replaceAll("(?s)<thinking>.*?</thinking>", "")
+                .replaceAll("(?s)<status>.*?</status>", "")
+                .replaceAll("(?s)<photo>.*?</photo>", "")
+                .replaceAll("(?s)<draw>.*?</draw>", "")
+                .replaceAll("(?s)<mark>.*?</mark>", "")
+                .replaceAll("(?s)<moment>.*?</moment>", "")
+                .replaceAll("(?s)<diary>.*?</diary>", "")
+                .replaceAll("(?s)```.*?```", "")
+                .trim();
     }
 
     private static String clean(String t) {
@@ -221,14 +244,25 @@ public class Pusher {
     }
 
     // ---------- 调模型（影子路由） ----------
-    private static String callModel(JSONObject cfg) {
+    private static String callModel(Context ctx, JSONObject cfg) {
         try {
             String mode = cfg.optString("apiMode", "");
             String key = cfg.optString("apiKey", "");
             if (key.length() == 0) return null;
 
+            // 她要是把「余光」开着，就现读一遍这几个小时她在手机上干了什么。
+            // 网页那边存的是她自己的一份，这里是壳在后台自己读的 —— 后台醒来的时候网页多半没在跑。
+            String eye = "";
+            if (cfg.optBoolean("eyeOn", false)) {
+                try { eye = UsageBridge.brief(ctx, 6, cfg.optString("eyeMute", "")); } catch (Exception ig) {}
+            }
             String shadow = "<system_trigger>\n现在是 " + timeStr() + "。\n她此刻大概："
-                    + userStatus() + "。\n\n" + cfg.optString("shadowBody", "") + "\n</system_trigger>";
+                    + userStatus() + "。\n\n"
+                    + (eye.length() > 0
+                        ? "[她这几个小时在手机上干嘛]\n" + eye
+                          + "\n这是背景，不是话题。别拿它盘问她，也别每次都说「我看见你在刷」——大多数时候它只该影响你说话的语气。\n\n"
+                        : "")
+                    + cfg.optString("shadowBody", "") + "\n</system_trigger>";
 
             JSONArray recent = cfg.optJSONArray("messages");
             if (recent == null) recent = new JSONArray();
@@ -344,7 +378,7 @@ public class Pusher {
             Notification.Builder b;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) b = new Notification.Builder(ctx, CH_ID);
             else b = new Notification.Builder(ctx);
-            b.setSmallIcon(R.mipmap.ic_launcher)
+            b.setSmallIcon(R.drawable.ic_noti)
                     .setContentTitle(title)
                     .setContentText(text)
                     .setAutoCancel(true)
