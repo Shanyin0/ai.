@@ -131,17 +131,6 @@ cp <构建出来的 index.html> /workspace/north/index.html
 cd /workspace/north && git add -A && git commit -m "…" && git push origin main
 ```
 
-## Releases 的说明怎么写
-
-发布页上那段说明，是从提交正文里 `- ` 开头的行抓出来的（最多六条）。
-她原话：「简短一点，简洁明了，不要太文艺了，改了什么就什么说清楚就可以了，
-不要说太多，看到很烦。」
-
-所以每次提交正文里都要有几条这样的短句 —— 一行一件事，能多短多短。
-底下再写多长的来龙去脉都行，那部分不会出现在发布页上。
-
-安装包每一版都留着，不删。
-
 ## 技术上要记住的
 
 - `index.html` 是唯一的产物，由 scratchpad 里的 `page.html` + `build.py` 打包出来的。**不要直接手改 index.html。**
